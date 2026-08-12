@@ -24,5 +24,7 @@
 	<string>EversenseKit</string>
     <key>NSPrincipalClass</key>
     <string>EversenseKitPlugin.EversenseKitPlugin</string>
+	<key>com.loopkit.Loop.DeviceManufacturer</key>
+	<string>Senseonics</string>
 </dict>
 </plist>
