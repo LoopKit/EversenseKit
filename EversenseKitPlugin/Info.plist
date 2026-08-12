@@ -19,7 +19,7 @@
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>com.loopkit.Loop.CGMManagerDisplayName</key>
-	<string>Eversense E3/365</string>
+	<string>Eversense E3 / 365</string>
 	<key>com.loopkit.Loop.CGMManagerIdentifier</key>
 	<string>EversenseKit</string>
     <key>NSPrincipalClass</key>
