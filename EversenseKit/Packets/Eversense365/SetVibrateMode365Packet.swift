@@ -13,13 +13,12 @@ extension Eversense365 {
         }
 
         let silenced: Bool
-        init(silenced: Bool) {
-            self.silenced = silenced
+        init(vibrationEnabled: Bool) {
+            silenced = !vibrationEnabled
         }
 
         func getRequestData() -> Data {
-            let data = Data([PacketIds.WriteCommandId.rawValue, WriteIds.VibrateMode.rawValue, silenced ? 0 : 1])
-            return CryptoUtil.shared.encrypt(data: data)
+            Data([PacketIds.WriteCommandId.rawValue, WriteIds.VibrateMode.rawValue, silenced ? 1 : 0])
         }
 
         func parseResponse(data _: Data) -> SetDoNotDisturbResponse {

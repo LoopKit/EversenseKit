@@ -21,11 +21,13 @@ class EversenseUIController: UINavigationController, CGMManagerOnboarding, Compl
 
     var cgmManagerOnboardingDelegate: LoopKitUI.CGMManagerOnboardingDelegate?
     var completionDelegate: LoopKitUI.CompletionDelegate?
-    var cgmManager: EversenseCGMManager?
+    var cgmManager: EversenseCGMManager
     var displayGlucosePreference: DisplayGlucosePreference
 
     var colorPalette: LoopUIColorPalette
     var screenStack = [EversenseUIScreen]()
+
+    private var is365: Bool = true
 
     init(
         cgmManager: EversenseCGMManager? = nil,
@@ -65,61 +67,71 @@ class EversenseUIController: UINavigationController, CGMManagerOnboarding, Compl
     }
 
     private func getInitialScreen() -> EversenseUIScreen {
-        guard let cgmManager = cgmManager else {
-            return .onboardingStart
-        }
-
-        return cgmManager.state.isOnboarded ? .settings : .onboardingStart
+        cgmManager.state.isOnboarded ? .settings : .onboardingStart
     }
 
-    private func hostingController<Content: View>(rootView: Content) -> DismissibleHostingController<some View> {
+    private func hostingController<Content: View>(
+        rootView: Content,
+        title: String? = nil,
+        largeTitleDisplayMode: UINavigationItem.LargeTitleDisplayMode = .automatic
+    ) -> DismissibleHostingController<some View> {
         let rootView = rootView
-            .environment(\.appName, Bundle.main.bundleDisplayName)
+            .environment(\.appName, HostApp.current.name)
             .environmentObject(displayGlucosePreference)
-        return DismissibleHostingController(content: rootView, colorPalette: colorPalette)
+
+        let hostedView = DismissibleHostingController(content: rootView, colorPalette: colorPalette)
+        hostedView.navigationItem.title = title
+        hostedView.navigationItem.largeTitleDisplayMode = largeTitleDisplayMode
+
+        return hostedView
     }
 
     private func viewControllerForScreen(_ screen: EversenseUIScreen) -> UIViewController {
         switch screen {
         case .onboardingStart:
             let view = EversenseOnboardingStart(nextAction: onboardingNextStep)
-            return hostingController(rootView: view)
+            return hostingController(
+                rootView: view,
+                title: String(localized: "Welcome!", comment: "Onboarding Header")
+            )
 
         case .onboardingAuth:
-            let viewModel = Eversense365AuthViewModel(cgmManager, { self.navigateTo(.onboardingScan) })
-            return hostingController(rootView: EversenseAuth(viewModel: viewModel))
+            let viewModel = Eversense365AuthViewModel(cgmManager, is365, { self.navigateTo(.onboardingScan) })
+            return hostingController(
+                rootView: EversenseAuth(viewModel: viewModel),
+                title: String(localized: "Eversense Account", comment: "Login header")
+            )
 
         case .onboardingScan:
             let completion = {
-                if let cgmManager = self.cgmManager {
-                    cgmManager.state.isOnboarded = true
-                    cgmManager.notifyStateDidChange()
+                self.cgmManager.updateState {
+                    $0.isOnboarded = true
+                    $0.hasReportedInsertionDate = false
+                }
 
-                    if let cgmManagerOnboardingDelegate = self.cgmManagerOnboardingDelegate {
-                        DispatchQueue.main.async {
-                            cgmManagerOnboardingDelegate.cgmManagerOnboarding(didOnboardCGMManager: cgmManager)
-                            cgmManagerOnboardingDelegate.cgmManagerOnboarding(didCreateCGMManager: cgmManager)
-                            self.completionDelegate?.completionNotifyingDidComplete(self)
-                        }
-                    } else {
-                        self.logger.warning("Not onboarded -> no onboardDelegate...")
-                        DispatchQueue.main.async {
-                            self.completionDelegate?.completionNotifyingDidComplete(self)
-                        }
+                if let cgmManagerOnboardingDelegate = self.cgmManagerOnboardingDelegate {
+                    DispatchQueue.main.async {
+                        cgmManagerOnboardingDelegate.cgmManagerOnboarding(didOnboardCGMManager: self.cgmManager)
+                        cgmManagerOnboardingDelegate.cgmManagerOnboarding(didCreateCGMManager: self.cgmManager)
+                        self.completionDelegate?.completionNotifyingDidComplete(self)
+                    }
+                } else {
+                    self.logger.warning("Not onboarded -> no onboardDelegate...")
+                    DispatchQueue.main.async {
+                        self.completionDelegate?.completionNotifyingDidComplete(self)
                     }
                 }
             }
 
             let viewModel = EversenseScanViewModel(cgmManager, completion)
-            return hostingController(rootView: EversenseScanView(viewModel: viewModel))
+            return hostingController(
+                rootView: EversenseScanView(viewModel: viewModel),
+                title: String(localized: "Scanning", comment: "Scanning header")
+            )
 
         case .settings:
             let deleteCgm = {
-                guard let cgmManager = self.cgmManager else {
-                    return
-                }
-
-                cgmManager.delete {
+                self.cgmManager.delete {
                     DispatchQueue.main.async {
                         self.completionDelegate?.completionNotifyingDidComplete(self)
                     }
@@ -137,33 +149,67 @@ class EversenseUIController: UINavigationController, CGMManagerOnboarding, Compl
                 toCalibrationHistory: { self.navigateTo(.calibrationHistory) },
                 toAlertHistory: { self.navigateTo(.alertHistory) }
             )
-            return hostingController(rootView: EversenseSettingsView(viewModel: viewModel))
+            return hostingController(
+                rootView: EversenseSettingsView(viewModel: viewModel),
+                title: viewModel.transmitterModel
+            )
+
         case .transmitterInfo:
             let viewModel = TransmitterInfoViewModel(cgmManager: cgmManager)
-            return hostingController(rootView: TransmitterInfoView(viewModel: viewModel))
+            return hostingController(
+                rootView: TransmitterInfoView(viewModel: viewModel),
+                title: String(localized: "Transmitter information", comment: "transmitter section")
+            )
+
         case .transmitterSettings:
             let viewModel = TransmitterSettingsViewModel(cgmManager: cgmManager, unit: displayGlucosePreference.unit)
-            return hostingController(rootView: TransmitterSettingsView(viewModel: viewModel))
+            return hostingController(
+                rootView: TransmitterSettingsView(viewModel: viewModel),
+                title: String(localized: "Transmitter settings", comment: "Title for user options")
+            )
+
         case .placementGuide:
             if #available(iOS 16.0, *) {
                 let viewModel = PlacementGuideViewModel(cgmManager: cgmManager)
-                return hostingController(rootView: PlacementGuideView(viewModel: viewModel))
+                return hostingController(
+                    rootView: PlacementGuideView(viewModel: viewModel),
+                    title: String(localized: "Placement Guide", comment: "Title for placement guide")
+                )
             } else {
-                return hostingController(rootView: PlacementGuideEmpty())
+                return hostingController(
+                    rootView: PlacementGuideEmpty(),
+                    title: String(localized: "Placement Guide", comment: "Title for placement guide")
+                )
             }
+
         case .calibration:
             let viewModel = CalibrationViewModel(cgmManager: cgmManager, displayGlucosePreference.unit, goBack)
-            return hostingController(rootView: CalibrationView(viewModel: viewModel))
+            return hostingController(
+                rootView: CalibrationView(viewModel: viewModel),
+                title: String(localized: "Calibration", comment: "Calibation header")
+            )
+
         case .calibrationHistory:
             let viewModel = CalibrationHistoryViewModel(cgmManager: cgmManager, glucosePreference: displayGlucosePreference)
-            return hostingController(rootView: CalibrationHistoryView(viewModel: viewModel))
+            return hostingController(
+                rootView: CalibrationHistoryView(viewModel: viewModel),
+                title: String(localized: "Calibration history", comment: "Calibation history header")
+            )
+
         case .alertHistory:
             let viewModel = AlertHistoryViewModel(cgmManager: cgmManager)
-            return hostingController(rootView: AlertHistoryView(viewModel: viewModel))
+            return hostingController(
+                rootView: AlertHistoryView(viewModel: viewModel),
+                title: String(localized: "Alert history", comment: "Alert history header")
+            )
+
         case .dmsSettings:
             let inviteViewModel = InviteNowViewModel(cgmManager: cgmManager)
             let viewModel = DMSSettingsViewModel(cgmManager: cgmManager, inviteNowViewModel: inviteViewModel)
-            return hostingController(rootView: DMSSettingsView(viewModel: viewModel))
+            return hostingController(
+                rootView: DMSSettingsView(viewModel: viewModel),
+                title: String(localized: "DMS Settings", comment: "DMS header")
+            )
         }
     }
 
@@ -186,49 +232,50 @@ class EversenseUIController: UINavigationController, CGMManagerOnboarding, Compl
 
     private func onboardingNextStep(_ cgmType: Int) {
         #if targetEnvironment(simulator)
-            if let cgmManager = self.cgmManager {
-                cgmManager.state.isOnboarded = true
-                cgmManager.state.bleNameString = cgmType == 1 ? "Eversense 365 DEMO" : "Eversense E3 DEMO"
-                cgmManager.state.security = cgmType == 1 ? .v2 : .none
-                cgmManager.state.recentGlucoseInMgDl = 140
-                cgmManager.state.recentGlucoseDateTime = Date.now
-                cgmManager.state.recentGlucoseTrend = .flat
-                cgmManager.state.signalStrength = .Good
-                cgmManager.state.signalStrengthRaw = 1350
-                cgmManager.state.batteryPercentage = 75
-                cgmManager.state.calibrationMode = .WeeklySingle
-                cgmManager.state.calibrationPhase = .DAILY_CALIBRATION
-                cgmManager.state.calibrationReadiness = .Ready
-                cgmManager.state.activatedAt = Date.now
-                cgmManager.state.lastCalibration = Date.now
-                cgmManager.state.nextCalibration = Date.now.addingTimeInterval(.days(7))
-                cgmManager.state.lastSynced = Date.now
-                cgmManager.state.activeAlarms = [
+            cgmManager.updateState { state in
+                state.isOnboarded = true
+                state.bleNameString = cgmType == 1 ? "Eversense 365 DEMO" : "Eversense E3 DEMO"
+                state.security = cgmType == 1 ? .v2 : .none
+                state.recentGlucoseInMgDl = 140
+                state.recentGlucoseDateTime = Date.now
+                state.recentGlucoseTrend = .flat
+                state.signalStrength = .Good
+                state.signalStrengthRaw = 1350
+                state.batteryPercentage = 75
+                state.calibrationMode = .WeeklySingle
+                state.calibrationPhase = .DAILY_CALIBRATION
+                state.calibrationReadiness = .Ready
+                state.activatedAt = Date.now
+                state.lastCalibration = Date.now
+                state.nextCalibration = Date.now.addingTimeInterval(.days(7))
+                state.lastSynced = Date.now
+                state.activeAlarms = [
                     ActiveAlarm(
                         code: .CalibrationNowAlarm,
-                        codeRaw: Alarm.CalibrationNowAlarm.rawValue,
+                        datetime: Date.now,
                         glucoseInMgDl: 0,
                         flag: 0,
                         priority: 0
                     ),
                     ActiveAlarm(
                         code: .PredictiveHighAlarm,
-                        codeRaw: Alarm.CalibrationNowAlarm.rawValue,
+                        datetime: Date.now,
                         glucoseInMgDl: 0,
                         flag: 0,
                         priority: 2
                     )
                 ]
+            }
 
-                if let cgmManagerOnboardingDelegate = self.cgmManagerOnboardingDelegate {
-                    DispatchQueue.main.async {
-                        cgmManagerOnboardingDelegate.cgmManagerOnboarding(didOnboardCGMManager: cgmManager)
-                        cgmManagerOnboardingDelegate.cgmManagerOnboarding(didCreateCGMManager: cgmManager)
-                        self.completionDelegate?.completionNotifyingDidComplete(self)
-                    }
+            if let cgmManagerOnboardingDelegate = self.cgmManagerOnboardingDelegate {
+                DispatchQueue.main.async {
+                    cgmManagerOnboardingDelegate.cgmManagerOnboarding(didOnboardCGMManager: self.cgmManager)
+                    cgmManagerOnboardingDelegate.cgmManagerOnboarding(didCreateCGMManager: self.cgmManager)
+                    self.completionDelegate?.completionNotifyingDidComplete(self)
                 }
             }
         #else
+            is365 = cgmType == 1
             navigateTo(.onboardingAuth)
         #endif
     }

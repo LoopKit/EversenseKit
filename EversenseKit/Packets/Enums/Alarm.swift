@@ -1,3 +1,5 @@
+import LoopKit
+
 enum AlarmType {
     case Critical
     case Warning
@@ -52,9 +54,9 @@ public enum Alarm: UInt8, Codable {
     case GeneralGlucoseSuspended = 65
     case SensorGraceAlarm = 66
     case SensorSyncConfirmedAlarm = 67
-    case TxDockedAlert = 68
-    case TxUndockedAlert = 69
     // Custom error codes in Eversense app
+//    case TxDockedAlert = 68
+//    case TxUndockedAlert = 69
 //    case TransmitterReconnected = 1001
 //    case TransmitterKeepAliveNotReceived = 1002
 //    case TransmitterGlucoseStale = 1003
@@ -118,6 +120,29 @@ public enum Alarm: UInt8, Codable {
         .SensorTemperatureAlarm,
         .SensorLowTemperatureAlarm
     ]
+
+    var alarm: Alert {
+        let title = self.title
+        let body = description ?? ""
+
+        return Alert(
+            identifier: Alert.Identifier(
+                managerIdentifier: "EversenseKit",
+                alertIdentifier: "com.bastiaanv.eversensekit.\(String(describing: self))"
+            ),
+            foregroundContent: Alert.Content(
+                title: title,
+                body: body,
+                acknowledgeActionButtonLabel: String(localized: "OK", comment: "Acknowlegde alarm")
+            ),
+            backgroundContent: Alert.Content(
+                title: title,
+                body: body,
+                acknowledgeActionButtonLabel: String(localized: "OK", comment: "Acknowlegde alarm")
+            ),
+            trigger: .immediate
+        )
+    }
 
     var type: AlarmType {
         switch self {
@@ -237,10 +262,6 @@ public enum Alarm: UInt8, Codable {
             return String(localized: "Glucose Suspend", comment: "title for GeneralGlucoseSuspended")
         case .SensorSyncConfirmedAlarm:
             return String(localized: "Sensor Sync Confirmed", comment: "title for SensorSyncConfirmedAlarm")
-        case .TxDockedAlert:
-            return String(localized: "Transmitter Inactive", comment: "title for TxDockedAlert")
-        case .TxUndockedAlert:
-            return String(localized: "Transmitter Active", comment: "title for TxUndockedAlert")
         case .SensorStability:
             return String(localized: "Sensor Stability", comment: "title for unknown")
         case .unknown:

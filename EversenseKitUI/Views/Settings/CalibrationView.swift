@@ -36,12 +36,15 @@ struct CalibrationView: View {
 
                     if isEdittingGlucose {
                         Picker(selection: $viewModel.glucose) {
-                            ForEach(isMgDl ? viewModel.allowedGlucoseValuesMgDl : viewModel.allowedGlucoseValuesMmolL, id: \.self) { item in
+                            ForEach(
+                                isMgDl ? viewModel.allowedGlucoseValuesMgDl : viewModel.allowedGlucoseValuesMmolL,
+                                id: \.self
+                            ) { item in
                                 Text(formatGlucose(item))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
-                        .padding(.horizontal)
+                            .pickerStyle(.wheel)
+                            .padding(.horizontal)
                     }
                 }
             }
@@ -53,13 +56,16 @@ struct CalibrationView: View {
                     .foregroundStyle(.red)
             }
             Button(action: viewModel.calibrate) {
-                Text("Calibrate transmitter", comment: "calibration")
+                if viewModel.isLoading {
+                    ActivityIndicator(isAnimating: .constant(true), style: .medium)
+                } else {
+                    Text("Calibrate transmitter", comment: "calibration")
+                }
             }
             .buttonStyle(ActionButtonStyle())
             .padding([.bottom, .horizontal])
             .disabled(!viewModel.allowCalibrations || viewModel.isLoading)
         }
-        .navigationTitle(String(localized: "Calibration", comment: "Calibation header"))
     }
 
     private func formatGlucose(_ value: UInt16) -> String {

@@ -12,13 +12,13 @@ final class EversenseKitDispatchGroup {
 
     func leave() {
         lock.lock()
-        count -= 1
-        guard count >= 0 else {
-            // Prevent crash on multiple leave calls
+        defer { lock.unlock() }
+
+        guard count > 0 else {
             return
         }
 
-        lock.unlock()
+        count -= 1
         group.leave()
     }
 
