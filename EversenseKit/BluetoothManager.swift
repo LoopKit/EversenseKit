@@ -16,15 +16,18 @@ class BluetoothManager: NSObject {
         super.init()
 
         managerQueue.sync {
-            self.manager = CBCentralManager(delegate: self, queue: managerQueue)
+            self.manager = CBCentralManager(
+                delegate: self,
+                queue: managerQueue,
+                options: [CBCentralManagerOptionRestoreIdentifierKey: "com.bastiaanv.eversensekit"]
+            )
         }
     }
 
     func ensureConnected(completionAsync: @escaping (ConnectFailure?) -> Void) {
         let completion = { (_ result: ConnectFailure?) -> Void in
             if let cgmManager = self.cgmManager {
-                cgmManager.state.connectionStatus = result == nil ? .connected : .idle
-                cgmManager.notifyStateDidChange()
+                cgmManager.updateState { $0.connectionStatus = result == nil ? .connected : .idle }
             }
 
             self.stopScan()
@@ -38,18 +41,26 @@ class BluetoothManager: NSObject {
             return
         }
 
-        if let _ = peripheral, let _ = peripheralManager {
-            cgmManager.state.connectionStatus = .connected
-            cgmManager.notifyStateDidChange()
+        if let peripheral, peripheral.state == .connected {
+            if let peripheralManager, peripheralManager.isConfigured, !peripheralManager.needsHandshake {
+                cgmManager.updateState { $0.connectionStatus = .connected }
+                logger.debug("Already connected!")
+                completion(nil)
+                return
+            }
 
-            logger.debug("Already connected!")
-
-            completion(nil)
+            cgmManager.updateState { $0.connectionStatus = .connecting }
+            logger.debug("Connected but not configured -> configuring")
+            connectCompletion = completion
+            configure(peripheral)
             return
         }
 
-        cgmManager.state.connectionStatus = .connecting
-        cgmManager.notifyStateDidChange()
+        cgmManager.updateState { $0.connectionStatus = .connecting }
+
+        if peripheral == nil, let identifier = cgmManager.state.peripheralIdentifier {
+            peripheral = manager?.retrievePeripherals(withIdentifiers: [identifier]).first
+        }
 
         if let peripheral = peripheral {
             logger.debug("Reconnecting to device...")
@@ -105,7 +116,7 @@ class BluetoothManager: NSObject {
         stopScan()
 
         scanCompletion = completion
-        manager.scanForPeripherals(withServices: [PeripheralManager.serviceUUID])
+        manager.scanForPeripherals(withServices: [CBUUID.serviceUUID])
 
         logger.info("Started scanning!")
     }
@@ -187,29 +198,46 @@ extension BluetoothManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        guard let connectCompletion = self.connectCompletion else {
-            logger.error("No connectCompletion available")
-            return
-        }
+        configure(peripheral)
+    }
 
+    /// Set up a connected peripheral. The link may have been connected by a pending connect with no
+    /// completion waiting (a system reconnect, or state restoration); it still needs services and
+    /// notifications before the transmitter's keep-alives reach us.
+    private func configure(_ peripheral: CBPeripheral) {
         guard let cgmManager = self.cgmManager else {
             logger.error("No cgmManager available")
-            connectCompletion(.unknown(reason: "No cgmManager available"))
+            connectCompletion?(.unknown(reason: "No cgmManager available"))
+            connectCompletion = nil
             return
         }
 
-        cgmManager.state.bleNameString = peripheral.name
-        cgmManager.notifyStateDidChange()
+        cgmManager.updateState {
+            $0.bleNameString = peripheral.name
+            $0.peripheralIdentifier = peripheral.identifier
+        }
 
         self.peripheral = peripheral
         peripheralManager = PeripheralManager(
             peripheral: peripheral,
             cgmManager: cgmManager,
-            connectCompletion: connectCompletion
+            connectCompletion: connectCompletion ?? { _ in }
         )
 
         logger.debug("Connected to transmitter -> Start discovering services...")
-        peripheral.discoverServices([PeripheralManager.serviceUUID])
+        peripheral.discoverServices([CBUUID.serviceUUID])
+    }
+
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
+        guard let restored = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral],
+              let peripheral = restored.first
+        else {
+            return
+        }
+
+        // The central is not powered on yet; centralManagerDidUpdateState configures or connects it
+        logger.info("Restored peripheral \(peripheral.name ?? "unknown") state=\(peripheral.state.rawValue)")
+        self.peripheral = peripheral
     }
 
     func centralManager(_: CBCentralManager, didDisconnectPeripheral _: CBPeripheral, error: Error?) {
@@ -224,8 +252,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
             return
         }
 
-        cgmManager.state.connectionStatus = .idle
-        cgmManager.notifyStateDidChange()
+        cgmManager.updateState { $0.connectionStatus = .idle }
 
         if !cgmManager.isOnboarded {
             return
@@ -245,11 +272,6 @@ extension BluetoothManager: CBCentralManagerDelegate {
     func centralManager(_: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         logger.error("Failed to connect to \(peripheral.name ?? "unknown") - error \(error?.localizedDescription ?? "unknown")")
 
-        if error != nil {
-            logger.debug("Clearing old reference to Transmitter...")
-        }
-
-        self.peripheral = nil
         peripheralManager?.cleanup()
         peripheralManager = nil
 

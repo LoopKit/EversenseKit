@@ -47,7 +47,7 @@ class EversenseSettingsViewModel: ObservableObject {
 
     private let logger = EversenseLogger(category: "SettingsViewModel")
 
-    private let cgmManager: EversenseCGMManager?
+    private let cgmManager: EversenseCGMManager
     public let allowCalibrations = FeatureFlags.ALLOW_CALIBRATION
     public let deleteCgm: () -> Void
     public let toTransmitterInfo: () -> Void
@@ -58,7 +58,7 @@ class EversenseSettingsViewModel: ObservableObject {
     public let toCalibrationHistory: () -> Void
     public let toAlertHistory: () -> Void
     init(
-        cgmManager: EversenseCGMManager?,
+        cgmManager: EversenseCGMManager,
         deleteCgm: @escaping () -> Void,
         toTransmitterInfo: @escaping () -> Void,
         toTransmitterSettings: @escaping () -> Void,
@@ -78,30 +78,30 @@ class EversenseSettingsViewModel: ObservableObject {
         self.toCalibrationHistory = toCalibrationHistory
         self.toAlertHistory = toAlertHistory
 
-        guard let cgmManager = cgmManager else {
-            return
-        }
-
         stateDidUpdate(cgmManager.state)
         cgmManager.addStateObserver(state: self, queue: .main)
     }
 
     deinit {
-        cgmManager?.removeStateObserver(state: self)
+        cgmManager.removeStateObserver(state: self)
     }
 
     func getLogs() -> [URL] {
-        if let cgmManager = self.cgmManager {
-            logger.info(cgmManager.state.debugDescription)
-        }
+        logger.info(cgmManager.state.debugDescription)
         return logger.getDebugLogs()
     }
 
     public func readGlucose() {
         forceSyncing = true
-        cgmManager?.heartbeathOperation(force: true) {
-            DispatchQueue.main.async {
-                self.forceSyncing = false
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else {
+                return
+            }
+            self.cgmManager.heartbeathOperation(force: true) {
+                DispatchQueue.main.async {
+                    self.forceSyncing = false
+                }
             }
         }
     }
@@ -115,7 +115,7 @@ extension EversenseSettingsViewModel: StateObserver {
         calibrationReadiness = state.calibrationReadiness
         activeAlarm = state.activeAlarms
             .filter { $0.code.type != .Info }
-            .map { item in ActiveAlarmItem(code: item.code, codeRaw: item.codeRaw, priority: item.priority) }
+            .map { item in ActiveAlarmItem(code: item.code, codeRaw: item.code.rawValue, priority: item.priority) }
 
         if state.batteryPercentage == 255 {
             batteryLevel = String(localized: "Charging", comment: "battery charging")
@@ -138,7 +138,7 @@ extension EversenseSettingsViewModel: StateObserver {
         }
 
         if let lastCalibration = state.lastCalibration, let nextCalibration = state.nextCalibration {
-            let calibrationPeriod = state.calibrationMode.toPeriod()
+            let calibrationPeriod = nextCalibration.timeIntervalSince(lastCalibration)
             let calibrationAge = lastCalibration.timeIntervalSinceNow * -1
             let nextCalibrationIn = calibrationPeriod - calibrationAge
 

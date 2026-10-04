@@ -28,25 +28,35 @@ class TransmitterSettingsViewModel: ObservableObject {
     @Published var repeatLow: Double = .minutes(15)
     @Published var repeatHigh: Double = .minutes(15)
 
-    public let rateAllowedOptions: [Double] = (0 ..< 8).map { 1.5 + Double($0) * 0.5 }
-    public let glucoseHighAllowedOptions: [Double] = (0 ... 110).map { Double($0 * 2 + 180) }
-    public let glucoseLowAllowedOptions: [Double] = (0 ... 15).map { Double($0 * 2 + 40) }
-    public let timeAllowedOptions: [Double] = (5 ... 30).map { Double($0) }
+    public let rateAllowedOptions: [Double]
+    public let glucoseHighAllowedOptions: [Double]
+    public let glucoseLowAllowedOptions: [Double]
+    public let timeAllowedOptions: [Double] = (5 ... 30).map { TimeInterval(minutes: Double($0)) }
     public let bleDisconnectAllowedOptions: [Double] = (1 ... 6).map { TimeInterval(minutes: Double($0 * 5)) }
     public let repeatLowAllowedOptions: [Double] = (1 ... 6).map { TimeInterval(minutes: Double($0 * 5)) }
     public let repeatHighAllowedOptions: [Double] = (1 ... 33).map { TimeInterval(minutes: Double($0 * 5 + 15)) }
 
-    private let cgmManager: EversenseCGMManager?
+    private let cgmManager: EversenseCGMManager
     private let unit: LoopUnit
-    private let formatString: NSString
-    init(cgmManager: EversenseCGMManager?, unit: LoopUnit) {
+    private let formatString: String
+    init(cgmManager: EversenseCGMManager, unit: LoopUnit) {
         self.cgmManager = cgmManager
         self.unit = unit
         formatString = unit == .milligramsPerDeciliter ? "%.1f mg/dl/min" : "%.2f mmol/L/min"
 
-        guard let cgmManager = cgmManager else {
-            return
-        }
+        rateAllowedOptions = PickerGenerator.generatePickerValues(
+            setting: PickerSettings(min: 1.5, max: 5, step: 0.1),
+            units: unit,
+            roundedFormat: "%.2f"
+        )
+        glucoseHighAllowedOptions = PickerGenerator.generatePickerValues(
+            setting: PickerSettings(min: 125, max: 350, step: 1),
+            units: unit
+        )
+        glucoseLowAllowedOptions = PickerGenerator.generatePickerValues(
+            setting: PickerSettings(min: 60, max: 115, step: 1),
+            units: unit
+        )
 
         vibrationMode = cgmManager.state.vibrateMode ?? false
 
@@ -77,31 +87,27 @@ class TransmitterSettingsViewModel: ObservableObject {
 
     func toRateFormatted(_ value: Double) -> String {
         let value = LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: value)
-        return NSString(format: formatString, value.doubleValue(for: unit)) as String
+        return String(format: formatString, value.doubleValue(for: unit))
     }
 
     func saveSettings() {
-        guard let cgmManager = cgmManager else {
-            return
-        }
-
         loading = true
         error = ""
 
-        cgmManager.bluetoothManager.ensureConnected { error in
-            if let error = error {
-                DispatchQueue.main.async {
-                    self.loading = false
-                    self.error = error.describe
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.cgmManager.bluetoothManager.ensureConnected { error in
+                if let error = error {
+                    DispatchQueue.main.async {
+                        self.loading = false
+                        self.error = error.describe
+                    }
+                    return
                 }
-                return
-            }
 
-            guard let peripheralManager = cgmManager.bluetoothManager.peripheralManager else {
-                return
-            }
+                guard let peripheralManager = self.cgmManager.bluetoothManager.peripheralManager else {
+                    return
+                }
 
-            DispatchQueue.global(qos: .userInitiated).async {
                 let transmitterSettings = TransmitterSettings(
                     vibrationMode: self.vibrationMode,
 
@@ -126,12 +132,12 @@ class TransmitterSettingsViewModel: ObservableObject {
                     bleDisconnect: self.bleDisconnect
                 )
 
-                if !cgmManager.state.is365 {
+                if !self.cgmManager.state.is365 {
                     EversenseE3.writeTransmitterSettings(peripheralManager: peripheralManager, data: transmitterSettings)
-                    EversenseE3.fullSync(peripheralManager: peripheralManager, cgmManager: cgmManager)
+                    EversenseE3.fullSync(peripheralManager: peripheralManager, cgmManager: self.cgmManager)
                 } else {
                     Eversense365.writeTransmitterSettings(peripheralManager: peripheralManager, data: transmitterSettings)
-                    Eversense365.fullSync(peripheralManager: peripheralManager, cgmManager: cgmManager)
+                    Eversense365.fullSync(peripheralManager: peripheralManager, cgmManager: self.cgmManager)
                 }
 
                 DispatchQueue.main.async {

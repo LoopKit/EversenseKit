@@ -4,24 +4,30 @@ class PeripheralManager: NSObject {
     private let logger = EversenseLogger(category: "PeripheralManager")
     private let peripheral: CBPeripheral
     private let cgmManager: EversenseCGMManager
+    private let cryptoUtil = CryptoUtil()
     private var connectCompletion: ((ConnectFailure?) -> Void)?
 
-    public static let serviceUUID = CBUUID(string: "c3230001-9308-47ae-ac12-3d030892a211")
-    private let requestCharacteristicUUID = CBUUID(string: "6eb0f021-a7ba-7e7d-66c9-6d813f01d273")
-    private let requestCharacteristicSecureUUID = CBUUID(string: "6eb0f025-bd60-7aaa-25a7-0029573f4f23")
-    private let requestCharacteristicSecureV2UUID = CBUUID(string: "c3230002-9308-47ae-ac12-3d030892a211")
-    private let responseCharacteristicUUID = CBUUID(string: "6eb0f024-bd60-7aaa-25a7-0029573f4f23")
-    private let responseCharacteristicSecureUUID = CBUUID(string: "6eb0f027-a7ba-7e7d-66c9-6d813f01d273")
-    private let responseCharacteristicSecureV2UUID = CBUUID(string: "c3230003-9308-47ae-ac12-3d030892a211")
-
+    private var securityHandshakeCompleted = false
     private var service: CBService?
     private var requestCharacteristic: CBCharacteristic?
+
+    /// Services and characteristics have been discovered; writes are possible.
+    var isConfigured: Bool { requestCharacteristic != nil }
+
+    /// The 365 handshake failed on this link, so nothing can be decrypted until it is retried.
+    private(set) var needsHandshake = false
     private var responseCharacteristic: CBCharacteristic?
 
     private var buffer = Data([])
     private var packet: (any BasePacket)?
     private var writeQueue: EversenseKitDispatchGroup?
     private var writeResponse: AnyObject?
+    private var isCleaningUp = false
+    private let writeSerialQueue = DispatchQueue(label: "com.bastiaanv.eversensekit.peripheralWriteQueue")
+
+    /// Protects `packet`, `writeQueue`, `writeResponse` and `isCleaningUp`, which are
+    /// touched both by the thread performing the write and by the CoreBluetooth delegate.
+    private let writeLock = NSRecursiveLock()
 
     private let maxPacketSize: Int
 
@@ -32,55 +38,103 @@ class PeripheralManager: NSObject {
 
         // Need the MTU for the 365 transmitter
         maxPacketSize = self.peripheral.maximumWriteValueLength(for: .withoutResponse)
-        cgmManager.state.security = .none
         super.init()
 
         self.peripheral.delegate = self
     }
 
     func cleanup() {
-        if let writeAction = writeQueue {
-            writeAction.leave()
-        }
+        writeLock.lock()
+        isCleaningUp = true
+        let writeAction = writeQueue
+        writeLock.unlock()
+
+        writeAction?.leave()
     }
 
     func write<T>(_ packet: any BasePacket, timeout: TimeInterval = .seconds(5)) throws -> T {
-        guard writeQueue == nil, let characteristic = requestCharacteristic else {
-            throw NSError(domain: "Command already running", code: 0)
-        }
+        try writeSerialQueue.sync { [self] in
+            // cleanup() may have run while we were queued waiting for the queue
+            writeLock.lock()
+            let cleaningUp = isCleaningUp
+            writeLock.unlock()
 
-        self.packet = packet
-        let writeQ = EversenseKitDispatchGroup()
-        writeQ.enter()
-
-        writeQueue = writeQ
-
-        let data = packet.getRequestData()
-        if case cgmManager.state.security = .none {
-            logger.debug("[RAW] Writing data -> \(data.hexString())")
-            peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
-        } else {
-            let encodedMessage = EncodingOperations.encode(data: data, chunkSize: maxPacketSize)
-
-            for message in EncodingOperations.split(data: encodedMessage, chunkSize: maxPacketSize) {
-                logger.debug("[ENCODED] Writing data -> \(message.hexString())")
-
-                peripheral.writeValue(message, for: characteristic, type: .withoutResponse)
-                Thread.sleep(forTimeInterval: .milliseconds(100))
+            guard !cleaningUp else {
+                throw NSError(domain: "PeripheralManager cleaned up", code: -1)
             }
-        }
 
-        // Wait for response or timeout timer...
-        _ = writeQ.wait(timeout: .now().advanced(by: .seconds(Int(timeout))))
-        writeQueue = nil
+            guard let characteristic = requestCharacteristic else {
+                logger.error("Not connected anymore...", type: .send)
+                throw NSError(domain: "Not connected anymore...", code: 0, userInfo: nil)
+            }
 
-        guard let response = writeResponse as? T else {
+            let writeQ = EversenseKitDispatchGroup()
+            writeQ.enter()
+
+            writeLock.lock()
+            self.packet = packet
+            writeQueue = writeQ
             writeResponse = nil
-            throw NSError(domain: "Timeout has been hit...", code: 0, userInfo: nil)
+            writeLock.unlock()
+
+            var data = packet.getRequestData()
+            if cgmManager.state.security == .none {
+                logger.debug("[RAW] Writing data -> \(data.hexString())", type: .send)
+                peripheral.writeValue(data, for: characteristic, type: .withoutResponse)
+            } else {
+                if packet.responseType != Eversense365.PacketIds.AuthenticateV2ResponseId.rawValue {
+                    data = cryptoUtil.encrypt(data: data)
+                }
+                let encodedMessage = EncodingOperations.encode(data: data, chunkSize: maxPacketSize)
+                for message in EncodingOperations.split(data: encodedMessage, chunkSize: maxPacketSize) {
+                    logger.debug("[ENCODED] Writing data -> \(message.hexString())", type: .send)
+
+                    peripheral.writeValue(message, for: characteristic, type: .withoutResponse)
+                    Thread.sleep(forTimeInterval: .milliseconds(100))
+                }
+            }
+
+            // Wait for response or timeout timer...
+            _ = writeQ.wait(timeout: .now().advanced(by: .seconds(Int(timeout))))
+
+            writeLock.lock()
+            writeQueue = nil
+            let response = writeResponse as? T
+            writeResponse = nil
+            writeLock.unlock()
+
+            guard let response else {
+                throw NSError(domain: "Timeout has been hit...", code: 0, userInfo: nil)
+            }
+
+            return response
+        }
+    }
+
+    /// Signals the pending write that its response (or error) has arrived.
+    /// Returns false when there is no pending write.
+    private func signalPendingWrite() -> Bool {
+        writeLock.lock()
+        let stream = writeQueue
+        writeLock.unlock()
+
+        guard let stream else {
+            logger.warning("No pending writeQueue", type: .receive)
+            return false
         }
 
-        writeResponse = nil
-        return response
+        stream.leave()
+        return true
+    }
+
+    private func failConnect(_ reason: ConnectFailure) {
+        connectCompletion?(reason)
+        connectCompletion = nil
+    }
+
+    private func succeedConnect() {
+        connectCompletion?(nil)
+        connectCompletion = nil
     }
 }
 
@@ -88,14 +142,14 @@ extension PeripheralManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
         if let error = error {
             logger.error("Got error while discovering services: \(error.localizedDescription)")
-            connectCompletion?(ConnectFailure.failedToDiscoverServices)
+            failConnect(ConnectFailure.failedToDiscoverServices)
             return
         }
 
-        self.service = peripheral.services?.first { $0.uuid == PeripheralManager.serviceUUID }
+        self.service = peripheral.services?.first { $0.uuid == CBUUID.serviceUUID }
         guard let service = self.service else {
             logger.error("Service not found: \(peripheral.services?.map(\.uuid.uuidString) ?? [])")
-            connectCompletion?(ConnectFailure.failedToDiscoverServices)
+            failConnect(ConnectFailure.failedToDiscoverServices)
             return
         }
 
@@ -106,53 +160,44 @@ extension PeripheralManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: (any Error)?) {
         if let error = error {
             logger.error("Got error while discovering characteristics: \(error.localizedDescription)")
-            connectCompletion?(ConnectFailure.failedToDiscoverCharacteristics)
+            failConnect(ConnectFailure.failedToDiscoverCharacteristics)
             return
         }
 
-        if let requestCharacteristic = service.characteristics?.first(where: { $0.uuid == self.requestCharacteristicUUID }),
-           let responseCharacteristic = service.characteristics?
-           .first(where: { $0.uuid == self.responseCharacteristicUUID })
-        {
-            cgmManager.state.security = .none
+        // Ordered: `.none` is checked first, then falls back to the secure tiers.
+        let tiers: [(security: SecurityType, requestUUID: CBUUID, responseUUID: CBUUID, log: String)] = [
+            (
+                .none,
+                CBUUID.requestCharacteristicUUID,
+                CBUUID.responseCharacteristicUUID,
+                "[NONE security] Discovering completed -> Enabling notifing & send bleBondingInformation..."
+            ),
+            (
+                .v2,
+                CBUUID.requestCharacteristicSecureV2UUID,
+                CBUUID.responseCharacteristicSecureV2UUID,
+                "[V2 security] Discovering completed -> Enabling notifing..."
+            )
+        ]
+
+        for tier in tiers {
+            guard let requestCharacteristic = service.characteristics?.first(where: { $0.uuid == tier.requestUUID }),
+                  let responseCharacteristic = service.characteristics?.first(where: { $0.uuid == tier.responseUUID })
+            else {
+                continue
+            }
+
+            cgmManager.updateState { $0.security = tier.security }
             self.requestCharacteristic = requestCharacteristic
             self.responseCharacteristic = responseCharacteristic
 
-            logger.debug("[NONE security] Discovering completed -> Enabling notifing & send bleBondingInformation...")
-            peripheral.setNotifyValue(true, for: responseCharacteristic)
-            return
-        }
-
-        if let requestCharacteristic = service.characteristics?
-            .first(where: { $0.uuid == self.requestCharacteristicSecureV2UUID }),
-            let responseCharacteristic = service.characteristics?
-            .first(where: { $0.uuid == self.responseCharacteristicSecureV2UUID })
-        {
-            cgmManager.state.security = .v2
-            self.requestCharacteristic = requestCharacteristic
-            self.responseCharacteristic = responseCharacteristic
-
-            logger.debug("[V2 security] Discovering completed -> Enabling notifing...")
-            peripheral.setNotifyValue(true, for: responseCharacteristic)
-            return
-        }
-
-        if let requestCharacteristic = service.characteristics?
-            .first(where: { $0.uuid == self.requestCharacteristicSecureUUID }),
-            let responseCharacteristic = service.characteristics?
-            .first(where: { $0.uuid == self.responseCharacteristicSecureUUID })
-        {
-            cgmManager.state.security = .v1
-            self.requestCharacteristic = requestCharacteristic
-            self.responseCharacteristic = responseCharacteristic
-
-            logger.debug("[V1 security] Discovering completed -> Enabling notifing...")
+            logger.debug(tier.log)
             peripheral.setNotifyValue(true, for: responseCharacteristic)
             return
         }
 
         logger.error("Characteristics could not found: \(service.characteristics ?? [])")
-        connectCompletion?(ConnectFailure.failedToDiscoverCharacteristics)
+        failConnect(ConnectFailure.failedToDiscoverCharacteristics)
     }
 
     func peripheral(_: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: (any Error)?) {
@@ -167,140 +212,172 @@ extension PeripheralManager: CBPeripheralDelegate {
         } else {
             logger.info("Successfully enabled notify for \(characteristic.uuid.uuidString)")
 
-            Task {
-                switch cgmManager.state.security {
-                case .none:
-                    writeNoneSecurity()
-                case .v1:
-//                    await getFleetKey()
-                    return
-                case .v2:
-                    await authFlowV2()
-                }
+            switch cgmManager.state.security {
+            case .none:
+                Task { writeNoneSecurity() }
+            case .v2:
+                runHandshakeV2()
             }
+        }
+    }
+
+    private func runHandshakeV2() {
+        needsHandshake = false
+        Task {
+            await authFlowV2()
+            needsHandshake = !securityHandshakeCompleted
         }
     }
 
     func peripheral(_: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if let error = error {
-            logger.error("Received error on value update: \(error.localizedDescription)")
+            logger.error("Received error on value update: \(error.localizedDescription)", type: .receive)
             connectCompletion?(ConnectFailure.unknown(reason: "Received error on value update: \(error.localizedDescription)"))
             return
         }
 
         guard let data = characteristic.value else {
-            logger.warning("Empty data received")
+            logger.warning("Empty data received", type: .receive)
             return
         }
 
         let isE3 = cgmManager.state.security == .none
-        if isE3 {
-            buffer.append(data)
-        } else {
-            buffer.append(data.subdata(in: (buffer.isEmpty ? 3 : 2) ..< data.count))
+        guard PacketFraming.appendReceivedChunk(data, to: &buffer, isE3: isE3) else {
+            return
         }
         var actualData = Data(buffer)
 
-        if !isE3 {
-            if data[0] != data[1] {
-                // Data is chuncked, lets store this and wait
-                return
-            }
+        if !isE3, needsHandshake {
+            // The transmitter is pushing to a link whose handshake failed; retry it now
+            logger.info("Received data on an unauthenticated link, retrying handshake", type: .receive)
+            buffer = Data()
+            runHandshakeV2()
+            return
+        }
 
-            if buffer[0] != Eversense365.PacketIds.AuthenticateV2ResponseId.rawValue {
-                // Only decrypt if packet is not for Authentication
-                actualData = CryptoUtil.shared.decrypt(data: actualData)
-                guard !actualData.isEmpty else {
-                    logger.error("Failed to decrypt payload")
-                    buffer = Data()
-                    return
-                }
+        if !isE3, securityHandshakeCompleted {
+            // Only decrypt if packet is for 365 & not for Authentication
+            actualData = cryptoUtil.decrypt(data: actualData)
+            guard !actualData.isEmpty else {
+                logger.error("Failed to decrypt payload", type: .receive)
+                buffer = Data()
+                return
             }
         }
 
-        logger.debug("Decrypted payload: \(actualData.hexString())")
+        logger.debug("Decrypted payload: \(actualData.hexString())", type: .receive)
         buffer = Data()
 
-        if actualData[0] == EversenseE3.PacketIds.keepAlivePush.rawValue {
-            // TODO: Detect alarm notification
-            logger.debug("[E3] Got keep alive message")
-
-            if cgmManager.state.recentGlucoseDateTime == nil || cgmManager.state.recentGlucoseDateTime!
-                .addingTimeInterval(.minutes(4.5)) > Date.now
-            {
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    guard let self = self else { return }
-                    cgmManager.heartbeathOperation()
-                }
-            }
+        if handleKeepAlive(actualData) {
             return
         }
 
-        if actualData[0] == Eversense365.PacketIds.NotificationId.rawValue,
-           actualData[1] == Eversense365.PushIds.KeepAlive.rawValue
-        {
-            let packet = Eversense365.PushKeepAlivePacket()
-            let response = packet.parseResponse(data: actualData)
-
-            logger.debug("[365] Got keep alive message - mostRecentGlucoseDatetime: \(response.mostRecenteGlucoseDatetime)")
-            if response.mostRecenteGlucoseDatetime > (cgmManager.state.recentGlucoseDateTime ?? .distantPast) {
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    guard let self = self else { return }
-                    cgmManager.heartbeathOperation()
-                }
-            }
-
+        if handleAlarm(actualData) {
             return
         }
 
-        if actualData[0] == Eversense365.PacketIds.NotificationId.rawValue,
-           actualData[1] == Eversense365.PushIds.AlarmWithData.rawValue
-        {
-            let packet = Eversense365.PushAlarmWithDataPacket(currentGlucose: cgmManager.state.recentGlucoseInMgDl ?? 0)
-            let response = packet.parseResponse(data: actualData)
-
-            DispatchQueue.main.async {
-                self.cgmManager.state.activeAlarms = [response.alarm]
-                self.cgmManager.notifyStateDidChange()
-            }
-
-            logger.debug("[365] Received alarm")
+        if handleErrorResponse(
+            id: EversenseE3.PacketIds.errorResponseId.rawValue,
+            handler: EversenseE3.handleError,
+            data: actualData
+        ) {
             return
         }
 
-        if actualData[0] == EversenseE3.PacketIds.errorResponseId.rawValue {
-            EversenseE3.handleError(data: actualData)
-
-            guard let stream = writeQueue else {
-                logger.warning("No pending writeQueue")
-                return
-            }
-
-            stream.leave()
-            return
-        }
-
-        if actualData[0] == Eversense365.PacketIds.ErrorResponseId.rawValue {
-            Eversense365.handleError(data: actualData)
-
-            guard let stream = writeQueue else {
-                logger.warning("No pending writeQueue")
-                return
-            }
-
-            stream.leave()
+        if handleErrorResponse(
+            id: Eversense365.PacketIds.ErrorResponseId.rawValue,
+            handler: Eversense365.handleError,
+            data: actualData
+        ) {
             return
         }
 
         // From here we assume it is a normal packet
-        guard let packet = self.packet else {
-            logger.error("No active packet - data: \(actualData.hexString())")
+        handleNormalPacket(actualData, isE3: isE3)
+    }
+
+    // E3 keepalive + 365 push handling. Returns true when the packet was handled.
+    private func handleKeepAlive(_ data: Data) -> Bool {
+        if data[0] == EversenseE3.PacketIds.keepAlivePush.rawValue {
+            // TODO: Detect alarm notification
+            logger.debug("[E3] Got keep alive message", type: .receive)
+
+            if cgmManager.state.recentGlucoseDateTime == nil || cgmManager.state.recentGlucoseDateTime!
+                .addingTimeInterval(.minutes(4.5)) > Date.now
+            {
+                cgmManager.heartbeathOperation()
+            }
+            return true
+        }
+
+        guard PacketFraming.matchesNotification(data, pushId: .KeepAlive) else {
+            return false
+        }
+
+        let packet = Eversense365.PushKeepAlivePacket()
+        let response = packet.parseResponse(data: data)
+
+        logger.debug(
+            "[365] Got keep alive message - mostRecentGlucoseDatetime: \(response.mostRecenteGlucoseDatetime)",
+            type: .receive
+        )
+        if response.mostRecenteGlucoseDatetime > (cgmManager.state.recentGlucoseDateTime ?? .distantPast) {
+            cgmManager.heartbeathOperation()
+        }
+
+        return true
+    }
+
+    // 365 alarm-with-data. Returns true when the packet was handled.
+    private func handleAlarm(_ data: Data) -> Bool {
+        guard PacketFraming.matchesNotification(data, pushId: .AlarmWithData) else {
+            return false
+        }
+
+        let packet = Eversense365.PushAlarmWithDataPacket(currentGlucose: cgmManager.state.recentGlucoseInMgDl ?? 0)
+        let response = packet.parseResponse(data: data)
+        guard response.alarm.code != .unknown else {
+            logger.warning("[365] Received unknown alarm: \(response.alarmRaw)", type: .receive)
+            return true
+        }
+
+        cgmManager.updateState { $0.activeAlarms = [response.alarm] }
+
+        logger.debug("[365] Received alarm", type: .receive)
+        return true
+    }
+
+    // E3 (id 128) and 365 (id 255) error responses share the same shape; the ids are
+    // exclusive to each family. Returns true when this packet was an error response.
+    private func handleErrorResponse(id: UInt8, handler: (Data) -> Void, data: Data) -> Bool {
+        guard data[0] == id else {
+            return false
+        }
+
+        handler(data)
+        _ = signalPendingWrite()
+        return true
+    }
+
+    // Checksum, parse and signal the pending write. Assumes a normal packet.
+    private func handleNormalPacket(_ data: Data, isE3: Bool) {
+        var actualData = data
+
+        writeLock.lock()
+        let activePacket = packet
+        writeLock.unlock()
+
+        guard let activePacket else {
+            logger.error("No active packet - data: \(actualData.hexString())", type: .receive)
             return
         }
 
-        guard packet.checkPacket(data: actualData, doChecksum: isE3) else {
+        guard activePacket.checkPacket(data: actualData, doChecksum: isE3) else {
             logger
-                .warning("Received invalid response, invalid response code or checksum failed - data: \(actualData.hexString())")
+                .warning(
+                    "Received invalid response, invalid response code or checksum failed - data: \(actualData.hexString())",
+                    type: .receive
+                )
             return
         }
 
@@ -308,15 +385,20 @@ extension PeripheralManager: CBPeripheralDelegate {
             actualData = actualData.subdata(in: 1 ..< actualData.count - 2)
         }
 
-        writeResponse = packet.parseResponse(data: actualData) as AnyObject
+        let parsedResponse = activePacket.parseResponse(data: actualData) as AnyObject
 
-        guard let stream = writeQueue else {
-            logger.warning("No pending writeQueue - data: \(actualData.hexString())")
+        writeLock.lock()
+        writeResponse = parsedResponse
+        let stream = writeQueue
+        writeQueue = nil
+        writeLock.unlock()
+
+        guard let stream else {
+            logger.warning("No pending writeQueue - data: \(actualData.hexString())", type: .receive)
             return
         }
 
         stream.leave()
-        writeQueue = nil
     }
 }
 
@@ -327,8 +409,7 @@ extension PeripheralManager {
             let _: EversenseE3.SaveBleBondingInformationResponse = try write(EversenseE3.SaveBleBondingInformationPacket())
 
             EversenseE3.fullSync(peripheralManager: self, cgmManager: cgmManager)
-            connectCompletion?(nil)
-            connectCompletion = nil
+            succeedConnect()
         } catch {
             logger.error("Failed to SaveBleBondingInformationResponse: \(error.localizedDescription)")
             connectCompletion?(.failedToFetchFleetKey(reason: error.localizedDescription))
@@ -340,10 +421,12 @@ extension PeripheralManager {
 extension PeripheralManager {
     private func authFlowV2() async {
         if cgmManager.state.publicKeyV2 == nil || cgmManager.state.privateKeyV2 == nil || cgmManager.state.clientIdV2 == nil {
-            let (newPrivateKey, newPublicKey, newClientId) = CryptoUtil.generateKeyPair()
-            cgmManager.state.publicKeyV2 = newPublicKey
-            cgmManager.state.privateKeyV2 = newPrivateKey
-            cgmManager.state.clientIdV2 = newClientId
+            let (newPrivateKey, newPublicKey, newClientId) = cryptoUtil.generateKeyPair()
+            cgmManager.updateState {
+                $0.publicKeyV2 = newPublicKey
+                $0.privateKeyV2 = newPrivateKey
+                $0.clientIdV2 = newClientId
+            }
         }
 
         guard
@@ -351,30 +434,35 @@ extension PeripheralManager {
             let privateKey = cgmManager.state.privateKeyV2
         else {
             logger.error("Failed to generate keypair")
-            connectCompletion?(.preconditionFailed(reason: "Failed to generate keypair..."))
-            connectCompletion = nil
+            failConnect(.preconditionFailed(reason: "Failed to generate keypair..."))
             return
         }
 
+        var hasEnteredAuthFlow = false
+
         do {
             if cgmManager.state.certificateV2 == nil {
+                hasEnteredAuthFlow = true
                 guard
-                    let username = cgmManager.state.username,
-                    let password = cgmManager.state.password,
+                    let credentials = cgmManager.keychain.getEversenseCredentials(),
                     let publicKey = cgmManager.state.publicKeyV2
                 else {
                     logger.error("Missing credentials...")
-                    connectCompletion?(.preconditionFailed(reason: "Missing credentials..."))
-                    connectCompletion = nil
+                    failConnect(.preconditionFailed(reason: "Missing credentials..."))
                     return
                 }
 
                 let whoAmIResponse: Eversense365.AuthWhoAmIResponse =
                     try write(Eversense365.AuthWhoAmIPacket(secret: clientId))
 
-                let accessResponse = try await AuthenticationApi.login(username: username, password: password)
+                let accessResponse = try await AuthenticationApi.login(
+                    cgmManager: cgmManager,
+                    username: credentials.username,
+                    password: credentials.password
+                )
 
                 let fleetSecret = await KeyVaultApi.getFleetSecretV2(
+                    cgmManager: cgmManager,
                     accessToken: accessResponse.accessToken,
                     serialNumber: whoAmIResponse.serialNumber.base64Safe(),
                     nonce: whoAmIResponse.nonce.base64Safe(),
@@ -387,16 +475,14 @@ extension PeripheralManager {
                       let certificate = fleetSecret.result.certificate
                 else {
                     logger.error("FleetSecret is empty or is missing information...")
-                    connectCompletion?(.preconditionFailed(reason: "FleetSecret is empty..."))
-                    connectCompletion = nil
+                    failConnect(.preconditionFailed(reason: "FleetSecret is empty..."))
                     return
                 }
 
-                cgmManager.state.certificateV2 = certificate
+                cgmManager.updateState { $0.certificateV2 = certificate }
                 guard let certificateData = Data(hexString: certificate) else {
                     logger.error("Could not parse certificate - data: \(certificate)")
-                    connectCompletion?(.preconditionFailed(reason: "No cert available..."))
-                    connectCompletion = nil
+                    failConnect(.preconditionFailed(reason: "No cert available..."))
                     return
                 }
 
@@ -407,11 +493,10 @@ extension PeripheralManager {
                 logger.info("Skipping online keyVault call, certificate already set")
             }
 
-            let (ephemPrivateKey, ephemPublicKey, salt, digitalSignature) = try CryptoUtil.generateEphem(privateKey: privateKey)
+            let (ephemPrivateKey, ephemPublicKey, salt, digitalSignature) = try cryptoUtil.generateEphem(privateKey: privateKey)
             guard digitalSignature.count == 64 else {
                 logger.error("Generated an invalid signature - length: \(digitalSignature.count)")
-                connectCompletion?(.preconditionFailed(reason: "Signature failed..."))
-                connectCompletion = nil
+                failConnect(.preconditionFailed(reason: "Signature failed..."))
                 return
             }
 
@@ -424,27 +509,28 @@ extension PeripheralManager {
             ))
 
             guard startResponse.sessionPublicKey.count > 6 else {
-                connectCompletion?(.preconditionFailed(reason: "Auth flow failed"))
-                connectCompletion = nil
+                failConnect(.preconditionFailed(reason: "Auth flow failed"))
                 return
             }
 
-            try CryptoUtil.shared.generateSessionKey(
+            try cryptoUtil.generateSessionKey(
                 sessionPublicKey: startResponse.sessionPublicKey,
                 privateKey: ephemPrivateKey,
                 salt: salt
             )
 
+            securityHandshakeCompleted = true
             Eversense365.fullSync(peripheralManager: self, cgmManager: cgmManager)
-            connectCompletion?(nil)
-            connectCompletion = nil
+            succeedConnect()
 
         } catch {
-            cgmManager.state.certificateV2 = nil
-            cgmManager.notifyStateDidChange()
+            if hasEnteredAuthFlow {
+                // Only reset certificate if auth flow failed
+                cgmManager.updateState { $0.certificateV2 = nil }
+            }
 
             logger.error("Failed to write Auth v2 - \(error.localizedDescription)")
-            connectCompletion?(.failedToFetchFleetKey(reason: "Failed to write Auth v2 - \(error.localizedDescription)"))
+            failConnect(.failedToFetchFleetKey(reason: "Failed to write Auth v2 - \(error.localizedDescription)"))
             return
         }
     }

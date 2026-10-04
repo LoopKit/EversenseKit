@@ -26,8 +26,7 @@ extension Eversense365 {
         }
 
         func getRequestData() -> Data {
-            let data = Data([PacketIds.ReadCommandId.rawValue, ReadIds.ActiveAlerts.rawValue])
-            return CryptoUtil.shared.encrypt(data: data)
+            Data([PacketIds.ReadCommandId.rawValue, ReadIds.ActiveAlerts.rawValue])
         }
 
         /// Parsed message:
@@ -57,7 +56,7 @@ extension Eversense365 {
 
                 alarms.append(ActiveAlarm(
                     code: Alarm(rawValue: data[offsetStart]) ?? .unknown,
-                    codeRaw: data[offsetStart],
+                    datetime: Date.now,
                     glucoseInMgDl: currentGlucose,
                     flag: data[offsetStart + 1],
                     priority: data[offsetStart + 2],

@@ -5,7 +5,7 @@ struct AlertHistoryView: View {
     @ObservedObject var viewModel: AlertHistoryViewModel
 
     var body: some View {
-        NavigationView {
+        VStack(alignment: .center) {
             if viewModel.isLoading {
                 ActivityIndicator(isAnimating: .constant(true), style: .large)
                 Text("Loading data...", comment: "loading calibration data")
@@ -26,7 +26,6 @@ struct AlertHistoryView: View {
                 }
             }
         }
-        .navigationTitle(String(localized: "Alert history", comment: "Alert history header"))
         .onAppear {
             viewModel.start()
         }

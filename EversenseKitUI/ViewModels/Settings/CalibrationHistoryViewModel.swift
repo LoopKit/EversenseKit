@@ -32,6 +32,13 @@ class CalibrationHistoryViewModel: ObservableObject {
         return formatter
     }()
 
+    private var timeFormatterE3: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
+
     private let glucosePreference: DisplayGlucosePreference
     private let logger = EversenseLogger(category: "CalibrationHistoryViewModel")
     private let cgmManager: EversenseCGMManager?
@@ -130,7 +137,7 @@ class CalibrationHistoryViewModel: ObservableObject {
 
                         let quantity = LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(item.glucoseInMgDl))
                         let historyItem = CalibrationHistoryItem(
-                            time: timeFormatter.string(from: item.datetime),
+                            time: timeFormatterE3.string(from: item.datetime),
                             glucose: glucosePreference.format(quantity),
                             flag: item.flag
                         )

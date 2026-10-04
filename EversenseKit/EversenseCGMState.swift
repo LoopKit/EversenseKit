@@ -41,12 +41,20 @@ public struct GlucoseDisplay: GlucoseDisplayable {
 public struct EversenseCGMState: RawRepresentable, Equatable {
     public typealias RawValue = CGMManager.RawStateValue
 
-    public init?(rawValue: RawValue) {
+    public init(rawValue: RawValue) {
         bleNameString = rawValue["bleNameString"] as? String
+        peripheralIdentifier = (rawValue["peripheralIdentifier"] as? String).flatMap(UUID.init)
         isOnboarded = rawValue["isOnboarded"] as? Bool ?? false
         isSyncing = rawValue["isSyncing"] as? Bool ?? false
         lastSynced = rawValue["lastSynced"] as? Date
         lastOnlineSync = rawValue["lastOnlineSync"] as? Date ?? lastSynced
+        lastUploadedTimestamp = rawValue["lastUploadedTimestamp"] as? Date
+            ?? rawValue["lastOnlineSync"] as? Date
+            ?? lastSynced
+        lastReadTimestamp = rawValue["lastReadTimestamp"] as? Date
+            ?? rawValue["lastUploadedTimestamp"] as? Date
+            ?? rawValue["lastOnlineSync"] as? Date
+            ?? lastSynced
         version = rawValue["version"] as? String
         extVersion = rawValue["extVersion"] as? String
         transmitterId = rawValue["transmitterId"] as? String
@@ -54,6 +62,7 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
         uploadBatchSize = rawValue["uploadBatchSize"] as? Int ?? 12
         sensorId = rawValue["sensorId"] as? Data ?? Data()
         communicationProtocol = rawValue["communicationProtocol"] as? Double ?? 0
+        hasReportedInsertionDate = rawValue["hasReportedInsertionDate"] as? Bool ?? false
         activatedAt = rawValue["activatedAt"] as? Date ?? Date.distantPast
         expiresAt = rawValue["expiresAt"] as? Date ?? Date.distantPast
         mmaFeatures = rawValue["mmaFeatures"] as? UInt8 ?? 0
@@ -81,6 +90,9 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
         recentGlucoseInMgDl = rawValue["recentGlucoseInMgDl"] as? UInt16
         recentGlucoseDateTime = rawValue["recentGlucoseDateTime"] as? Date
         batteryPercentage = rawValue["batteryPercentage"] as? Int ?? -1
+        lastBatteryRecord = rawValue["lastBatteryRecord"] as? UInt32 ?? 0
+        lastRawGlucoseRecord = rawValue["lastRawGlucoseRecord"] as? UInt32 ?? 0
+        hasReportedAppValues = rawValue["hasReportedAppValues"] as? Bool ?? false
 
         username = rawValue["username"] as? String
         password = rawValue["password"] as? String
@@ -90,7 +102,6 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
         privateKeyV2 = rawValue["privateKeyV2"] as? Data
         clientIdV2 = rawValue["clientIdV2"] as? Data
         certificateV2 = rawValue["certificateV2"] as? String
-        fleetKeyPublicKeyV2 = rawValue["fleetKeyPublicKeyV2"] as? Data
 
         if let rawCalibrationMode = rawValue["calibrationMode"] as? CalibrationMode.RawValue {
             calibrationMode = CalibrationMode(rawValue: rawCalibrationMode) ?? .Default
@@ -128,27 +139,42 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
             calibrationReadiness = .Unknown
         }
 
-        do {
-            if let activeAlarmsData = rawValue["activeAlarms"] as? Data {
-                activeAlarms = try JSONDecoder().decode([ActiveAlarm].self, from: activeAlarmsData)
-            } else {
-                activeAlarms = []
-            }
-        } catch {
-            EversenseLogger(category: "EversenseCGMState").error("Failed to decode activeAlarms - \(error.localizedDescription)")
+        if let rawApiZone = rawValue["apiZone"] as? EversenseApiZone.RawValue {
+            apiZone = EversenseApiZone(rawValue: rawApiZone) ?? .US
+        } else {
+            // security none -> E3 -> EU
+            // Every other security -> 365 -> US (only relevant while migrating this property)
+            apiZone = security == .none ? .OutsideUS : .US
+        }
+
+        if let activeAlarmsRaw = rawValue["activeAlarms"] as? [ActiveAlarm.RawValue] {
+            activeAlarms = activeAlarmsRaw.compactMap { ActiveAlarm(rawValue: $0) }
+        } else {
             activeAlarms = []
         }
 
-        do {
-            if let readingsToUploadData = rawValue["readingsToUpload"] as? Data {
-                readingsToUpload = try JSONDecoder().decode([CGMReading].self, from: readingsToUploadData)
-            } else {
-                readingsToUpload = []
-            }
-        } catch {
-            EversenseLogger(category: "EversenseCGMState")
-                .error("Failed to decode readingsToUpload - \(error.localizedDescription)")
+        if let readingsToUploadRaw = rawValue["readingsToUpload"] as? [CGMReading.RawValue] {
+            readingsToUpload = readingsToUploadRaw.compactMap { CGMReading(rawValue: $0) }
+        } else {
             readingsToUpload = []
+        }
+
+        if let essentailLogsToUploadRaw = rawValue["essentailLogsToUpload"] as? [CGMReading.RawValue] {
+            essentailLogsToUpload = essentailLogsToUploadRaw.compactMap { CGMReading(rawValue: $0) }
+        } else {
+            essentailLogsToUpload = []
+        }
+
+        if let batteryReadingsToUploadRaw = rawValue["batteryReadingsToUpload"] as? [BatteryReadings.RawValue] {
+            batteryReadingsToUpload = batteryReadingsToUploadRaw.compactMap { BatteryReadings(rawValue: $0) }
+        } else {
+            batteryReadingsToUpload = []
+        }
+
+        if let rawGlucoseReadingsToUploadRaw = rawValue["rawGlucoseReadingsToUpload"] as? [RawGlucoseReading.RawValue] {
+            rawGlucoseReadingsToUpload = rawGlucoseReadingsToUploadRaw.compactMap { RawGlucoseReading(rawValue: $0) }
+        } else {
+            rawGlucoseReadingsToUpload = []
         }
     }
 
@@ -156,10 +182,13 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
         var value: [String: Any] = [:]
 
         value["bleNameString"] = bleNameString
+        value["peripheralIdentifier"] = peripheralIdentifier?.uuidString
         value["isOnboarded"] = isOnboarded
         value["isSyncing"] = isSyncing
         value["lastSynced"] = lastSynced
         value["lastOnlineSync"] = lastOnlineSync
+        value["lastReadTimestamp"] = lastReadTimestamp
+        value["lastUploadedTimestamp"] = lastUploadedTimestamp
         value["shouldUploadToEversenseDMS"] = shouldUploadToEversenseDMS
         value["uploadBatchSize"] = uploadBatchSize
         value["version"] = version
@@ -167,9 +196,13 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
         value["transmitterId"] = transmitterId
         value["sensorId"] = sensorId
         value["communicationProtocol"] = communicationProtocol
+        value["hasReportedInsertionDate"] = hasReportedInsertionDate
+        value["hasReportedAppValues"] = hasReportedAppValues
         value["activatedAt"] = activatedAt
         value["expiresAt"] = expiresAt
         value["mmaFeatures"] = mmaFeatures
+        value["lastBatteryRecord"] = lastBatteryRecord
+        value["lastRawGlucoseRecord"] = lastRawGlucoseRecord
         value["vibrateMode"] = vibrateMode
         value["batteryPercentage"] = batteryPercentage
         value["signalStrength"] = signalStrength.rawValue
@@ -200,6 +233,7 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
         value["recentGlucoseDateTime"] = recentGlucoseDateTime
         value["recentGlucoseTrend"] = recentGlucoseTrend.rawValue
         value["security"] = security.rawValue
+        value["apiZone"] = apiZone.rawValue
         value["username"] = username
         value["password"] = password
         value["accessToken"] = accessToken
@@ -208,26 +242,19 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
         value["privateKeyV2"] = privateKeyV2
         value["clientIdV2"] = clientIdV2
         value["certificateV2"] = certificateV2
-        value["fleetKeyPublicKeyV2"] = fleetKeyPublicKeyV2
 
-        do {
-            value["activeAlarms"] = try JSONEncoder().encode(activeAlarms)
-        } catch {
-            EversenseLogger(category: "EversenseCGMState").error("Failed to encode activeAlarms - \(error.localizedDescription)")
-        }
-
-        do {
-            value["readingsToUpload"] = try JSONEncoder().encode(readingsToUpload)
-        } catch {
-            EversenseLogger(category: "EversenseCGMState")
-                .error("Failed to encode readingsToUpload - \(error.localizedDescription)")
-        }
+        value["activeAlarms"] = activeAlarms.map(\.rawValue)
+        value["readingsToUpload"] = readingsToUpload.map(\.rawValue)
+        value["essentailLogsToUpload"] = essentailLogsToUpload.map(\.rawValue)
+        value["batteryReadingsToUpload"] = batteryReadingsToUpload.map(\.rawValue)
+        value["rawGlucoseReadingsToUpload"] = rawGlucoseReadingsToUpload.map(\.rawValue)
 
         return value
     }
 
     public var connectionStatus: ConnectionStatus = .idle
     public var bleNameString: String?
+    public var peripheralIdentifier: UUID?
     public var isOnboarded: Bool
     public var isSyncing: Bool
     public var lastSynced: Date?
@@ -236,12 +263,15 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
     public var transmitterId: String?
     public var sensorId: Data
     public var communicationProtocol: Double
+    public var hasReportedInsertionDate: Bool
     public var activatedAt: Date
     public var expiresAt: Date
 
     public var shouldUploadToEversenseDMS: Bool
     public var uploadBatchSize: Int
     public var lastOnlineSync: Date?
+    public var lastReadTimestamp: Date?
+    public var lastUploadedTimestamp: Date?
 
     public var mmaFeatures: UInt8
     public var batteryPercentage: Int
@@ -281,13 +311,21 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
     public var recentGlucoseDateTime: Date?
     public var recentGlucoseTrend: GlucoseTrend
 
+    // Eversense DMS properties
+    public var hasReportedAppValues: Bool
     public var activeAlarms: [ActiveAlarm]
     public var readingsToUpload: [CGMReading]
+    public var essentailLogsToUpload: [CGMReading]
+    public var lastBatteryRecord: UInt32
+    public var batteryReadingsToUpload: [BatteryReadings]
+    public var lastRawGlucoseRecord: UInt32
+    public var rawGlucoseReadingsToUpload: [RawGlucoseReading]
 
     // Eversense 365
     public var security: SecurityType = .none
-    public var username: String?
-    public var password: String?
+    public var apiZone: EversenseApiZone
+    public var username: String? // UNUSED
+    public var password: String? // UNUSED
     public var accessToken: String?
     public var accessTokenExpiration: Date?
 
@@ -295,7 +333,6 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
     public var privateKeyV2: Data?
     public var clientIdV2: Data?
     public var certificateV2: String?
-    public var fleetKeyPublicKeyV2: Data?
 
     public var is365: Bool {
         !(security == .none)
@@ -315,6 +352,7 @@ public struct EversenseCGMState: RawRepresentable, Equatable {
             "— Connection —",
             "connectionStatus: \(connectionStatus)",
             "bleNameString: \(bleNameString ?? "nil")",
+            "peripheralIdentifier: \(peripheralIdentifier?.uuidString ?? "nil")",
             "isOnboarded: \(isOnboarded)",
             "isSyncing: \(isSyncing)",
             "lastSynced: \(lastSynced?.description ?? "nil")",

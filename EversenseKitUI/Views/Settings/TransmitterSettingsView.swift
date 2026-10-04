@@ -141,7 +141,7 @@ struct TransmitterSettingsView: View {
                                 Text(timeFormatter(item))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
+                            .pickerStyle(.wheel)
                     }
 
                     HStack {
@@ -161,7 +161,7 @@ struct TransmitterSettingsView: View {
                                 Text(timeFormatter(item))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
+                            .pickerStyle(.wheel)
                     }
                 } footer: {
                     Text(
@@ -190,7 +190,7 @@ struct TransmitterSettingsView: View {
                                 Text(timeFormatter(item))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
+                            .pickerStyle(.wheel)
                     }
                 } footer: {
                     Text(
@@ -220,7 +220,6 @@ struct TransmitterSettingsView: View {
             .padding([.bottom, .horizontal])
             .disabled(viewModel.loading)
         }
-        .navigationBarTitle(String(localized: "Transmitter settings", comment: "Title for user options"))
     }
 
     @ViewBuilder private func toggleRow(label: Text, hint: Text, value: Binding<Bool>) -> some View {
@@ -270,7 +269,7 @@ struct TransmitterSettingsView: View {
                                 Text(viewModel.toRateFormatted(item))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
+                            .pickerStyle(.wheel)
                     }
                 }
             }
@@ -301,8 +300,10 @@ struct TransmitterSettingsView: View {
                         labelValue
                             .foregroundStyle(statePicker.wrappedValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                         Spacer()
-                        Text(displayGlucosePreference.format(viewModel.toHkQuantity(valueValue.wrappedValue)))
-                            .foregroundStyle(statePicker.wrappedValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        Text(
+                            displayGlucosePreference.format(viewModel.toHkQuantity(valueValue.wrappedValue))
+                        )
+                        .foregroundStyle(statePicker.wrappedValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     }
                     .onTapGesture {
                         statePicker.wrappedValue.toggle()
@@ -314,7 +315,7 @@ struct TransmitterSettingsView: View {
                                 Text(displayGlucosePreference.format(viewModel.toHkQuantity(item)))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
+                            .pickerStyle(.wheel)
                     }
                 }
             }
@@ -362,15 +363,18 @@ struct TransmitterSettingsView: View {
                                 Text(timeFormatter(item))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
+                            .pickerStyle(.wheel)
                     }
 
                     HStack {
                         labelThreshold
                             .foregroundStyle(stateThresholdPicker.wrappedValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
                         Spacer()
-                        Text(displayGlucosePreference.format(viewModel.toHkQuantity(valueThreshold.wrappedValue)))
-                            .foregroundStyle(stateThresholdPicker.wrappedValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        Text(
+                            displayGlucosePreference
+                                .format(viewModel.toHkQuantity(valueThreshold.wrappedValue))
+                        )
+                        .foregroundStyle(stateThresholdPicker.wrappedValue ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     }
                     .onTapGesture {
                         stateThresholdPicker.wrappedValue.toggle()
@@ -382,7 +386,7 @@ struct TransmitterSettingsView: View {
                                 Text(displayGlucosePreference.format(viewModel.toHkQuantity(item)))
                             }
                         } label: { EmptyView() }
-                        .pickerStyle(.wheel)
+                            .pickerStyle(.wheel)
                     }
                 }
             }
@@ -419,7 +423,7 @@ struct TransmitterSettingsView: View {
                             Text(displayGlucosePreference.format(viewModel.toHkQuantity(item)))
                         }
                     } label: { EmptyView() }
-                    .pickerStyle(.wheel)
+                        .pickerStyle(.wheel)
                 }
             }
         } footer: {
