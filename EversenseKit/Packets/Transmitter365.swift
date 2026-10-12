@@ -40,7 +40,7 @@ extension Eversense365 {
                     )
                 }
 
-            guard let mostRecentGlucose = samples.last else {
+            guard !samples.isEmpty else {
                 return nil
             }
 
