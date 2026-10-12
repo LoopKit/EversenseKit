@@ -37,7 +37,7 @@ struct EversenseScanView: View {
                 }
             }
         }
-        .onChange(of: isPresented) { newValue in
+        .onChange(of: isPresented) { _, newValue in
             if !newValue {
                 viewModel.stopScan()
             }

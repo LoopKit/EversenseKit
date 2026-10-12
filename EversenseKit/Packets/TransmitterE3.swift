@@ -237,7 +237,7 @@ extension EversenseE3 {
 
                 $0.lastCalibration = lastCalibration
                 $0.nextCalibration = lastCalibration.addingTimeInterval(.hours(24))
-                $0.calibrationMode = calibrationMode ?? .Default
+                $0.calibrationMode = calibrationMode
                 $0.calibrationCount = calibrationCount.value
                 $0.calibrationPhase = calibrationPhase.phase
                 $0.calibrationReadiness = calibrationReadiness.calibrationReadiness
