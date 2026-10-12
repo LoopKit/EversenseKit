@@ -121,6 +121,41 @@ public enum Alarm: UInt8, Codable {
         .SensorLowTemperatureAlarm
     ]
 
+    /// Raised while the system can't give sensor glucose, per the alarm's own description.
+    var interruptsGlucose: Bool {
+        switch self {
+        case .CriticalFaultAlarm,
+             .EmptyBatteryAlarm,
+             .SensorTemperatureAlarm,
+             .SensorLowTemperatureAlarm,
+             .ReaderTemperatureAlarm,
+             .SensorAwolAlarm,
+             .InvalidSensorAlarm,
+             .CalibrationGracePeriodAlarm,
+             .CalibrationExpiredAlarm,
+             .TransmitterEOL396,
+             .GeneralGlucoseSuspended,
+             .SensorRetiredAlarm,
+             .SensorGraceAlarm:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var isAboutTransmitter: Bool {
+        switch self {
+        case .CriticalFaultAlarm, .EmptyBatteryAlarm, .ReaderTemperatureAlarm, .TransmitterEOL396:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var endsSensorSession: Bool {
+        self == .SensorRetiredAlarm || self == .SensorGraceAlarm
+    }
+
     var alarm: Alert {
         let title = self.title
         let body = description ?? ""
