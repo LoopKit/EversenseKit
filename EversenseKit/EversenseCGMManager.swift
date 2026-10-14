@@ -88,7 +88,7 @@ public class EversenseCGMManager: CGMManager {
         HKDevice(
             name: state.modelStr,
             manufacturer: "Senseonics",
-            model: nil,
+            model: state.is365 ? "Eversense 365" : "Eversense E3",
             hardwareVersion: nil,
             firmwareVersion: state.version,
             softwareVersion: state.extVersion,
@@ -422,6 +422,7 @@ extension EversenseCGMManager {
             }
 
             cgmManagerDelegate.cgmManagerDidUpdateState(self)
+            cgmManagerDelegate.cgmManager(self, didUpdate: self.cgmManagerStatus)
         }
     }
 }
