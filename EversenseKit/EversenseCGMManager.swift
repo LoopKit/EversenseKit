@@ -253,12 +253,14 @@ extension EversenseCGMManager {
                     return
                 }
 
-                let newData = samples.map {
+                // The newest sample is the current reading unless it is stale; earlier ones are caught up from the transmitter's log
+                let newData = samples.enumerated().map { index, sample in
                     NewGlucoseSample(
                         cgmManager: self,
-                        value: $0.glucoseInMgDl,
-                        trend: $0.trend,
-                        dateTime: $0.datetime
+                        value: sample.glucoseInMgDl,
+                        trend: sample.trend,
+                        dateTime: sample.datetime,
+                        isBackfill: index < samples.count - 1 || Date.now.timeIntervalSince(sample.datetime) > .minutes(10)
                     )
                 }
 

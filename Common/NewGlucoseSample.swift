@@ -3,7 +3,7 @@ import LoopAlgorithm
 import LoopKit
 
 extension NewGlucoseSample {
-    init(cgmManager: EversenseCGMManager, value: UInt16, trend: GlucoseTrend?, dateTime: Date) {
+    init(cgmManager: EversenseCGMManager, value: UInt16, trend: GlucoseTrend?, dateTime: Date, isBackfill: Bool = false) {
         self.init(
             date: dateTime,
             quantity: LoopQuantity(unit: .milligramsPerDeciliter, doubleValue: Double(value)),
@@ -13,7 +13,8 @@ extension NewGlucoseSample {
             isDisplayOnly: false,
             wasUserEntered: false,
             syncIdentifier: "\(dateTime.timeIntervalSince1970)\(value)",
-            device: cgmManager.device
+            device: cgmManager.device,
+            isBackfill: isBackfill
         )
     }
 }
