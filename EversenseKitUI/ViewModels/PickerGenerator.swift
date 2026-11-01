@@ -1,4 +1,4 @@
-import LoopAlgorithm
+import LoopKit
 
 struct PickerSettings {
     let min: Double
