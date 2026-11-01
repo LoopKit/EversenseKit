@@ -1,5 +1,4 @@
 import HealthKit
-import LoopAlgorithm
 import LoopKit
 
 public enum ConnectionStatus: UInt8 {

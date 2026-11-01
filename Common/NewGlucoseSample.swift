@@ -1,5 +1,4 @@
 import HealthKit
-import LoopAlgorithm
 import LoopKit
 
 extension NewGlucoseSample {
