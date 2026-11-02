@@ -130,11 +130,10 @@ class EversenseUIController: UINavigationController, CGMManagerOnboarding, Compl
             )
 
         case .settings:
-            let deleteCgm = {
-                self.cgmManager.delete {
-                    DispatchQueue.main.async {
-                        self.completionDelegate?.completionNotifyingDidComplete(self)
-                    }
+            let deleteCgm: () -> Void = {
+                Task {
+                    await self.cgmManager.delete()
+                    self.completionDelegate?.completionNotifyingDidComplete(self)
                 }
             }
 

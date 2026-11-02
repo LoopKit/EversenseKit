@@ -183,9 +183,9 @@ public class EversenseCGMManager: CGMManager {
         []
     }
 
-    public func delete(completion: @escaping () -> Void) {
+    public func delete() async {
         cleanup()
-        notifyDelegateOfDeletion(completion: completion)
+        await cgmManagerDelegate?.cgmManagerWantsDeletion(self)
     }
 }
 
