@@ -296,7 +296,7 @@ extension EversenseCGMManager {
     }
 
     func handleAlarm(alarms: [ActiveAlarm]) {
-        let newAlarms = findNewAlarms(current: state.activeAlarms, updated: alarms)
+        let newAlarms = Self.findNewAlarms(current: state.activeAlarms, updated: alarms)
         if !newAlarms.isEmpty {
             delegate.notify { delegate in
                 guard let delegate else {
@@ -361,7 +361,11 @@ extension EversenseCGMManager {
         return events
     }
 
-    private func findNewAlarms(current: [ActiveAlarm], updated: [ActiveAlarm]) -> [ActiveAlarm] {
+    static func alarms(afterPush pushed: ActiveAlarm, current: [ActiveAlarm]) -> [ActiveAlarm] {
+        current.filter { $0.code != pushed.code } + [pushed]
+    }
+
+    static func findNewAlarms(current: [ActiveAlarm], updated: [ActiveAlarm]) -> [ActiveAlarm] {
         let currentCodes = Set(current.filter { $0.code != .unknown }.map(\.code.rawValue))
         return updated.filter { !currentCodes.contains($0.code.rawValue) && $0.code != .unknown }
     }
