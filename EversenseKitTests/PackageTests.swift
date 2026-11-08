@@ -1,4 +1,5 @@
 @testable import EversenseKit
+import LoopKit
 import Testing
 
 struct PackageTest {
@@ -98,9 +99,13 @@ struct PackageTest {
     @Test func currentGlucoseOld() async throws {
         let data = Data(hexString: "88114d003434f3a000ba0000001000004a06625a") ?? Data()
         let packet = EversenseE3.GetCurrentGlucosePacket()
-        let result = packet.parseResponse(data: data)
+        #expect(packet.checkPacket(data: data, doChecksum: true))
 
-        #expect(result.glucoseInMgDl == 0)
+        // PeripheralManager strips the E3 response type and checksum before parsing.
+        let result = packet.parseResponse(data: data.subdata(in: 1 ..< data.count - 2))
+
+        #expect(result.glucoseInMgDl == 186)
+        #expect(result.trend == .upUp)
     }
 
     @Test func keepAlive() async throws {
