@@ -106,15 +106,6 @@ public class EversenseCGMManager: CGMManager {
         }
     }
 
-    public var delegateQueue: DispatchQueue! {
-        get {
-            delegate.queue
-        }
-        set {
-            delegate.queue = newValue
-        }
-    }
-
     let delegate = WeakSynchronizedDelegate<CGMManagerDelegate>()
     private let stateObservers = WeakSynchronizedSet<StateObserver>()
     let dmsQueue = DispatchQueue(label: "com.bastiaanv.eversensekit.dmsQueue")
@@ -286,7 +277,7 @@ extension EversenseCGMManager {
                 )
             }
 
-            delegate.cgmManager(self, hasNew: .newData(newData))
+            await delegate.cgmManager(self, hasNew: .newData(newData))
 
             let sensorID = self.state.sensorId.hexString()
             if !self.state.sensorId.isEmpty, self.state.sensorStartReportedFor != sensorID {
@@ -297,7 +288,7 @@ extension EversenseCGMManager {
                     expectedLifetime: self.state.is365 ? .days(365) : .days(180),
                     warmupPeriod: .hours(24)
                 )
-                delegate.cgmManager(self, hasNew: [insertionEvent])
+                await delegate.cgmManager(self, hasNew: [insertionEvent])
 
                 self.updateState { $0.sensorStartReportedFor = sensorID }
             }
@@ -322,11 +313,8 @@ extension EversenseCGMManager {
                     return
                 }
 
-                // issueAlert is async in LoopKit's current API; issue in order.
-                Task {
-                    for alarm in newAlarms {
-                        await delegate.issueAlert(alarm.code.alarm)
-                    }
+                for alarm in newAlarms {
+                    await delegate.issueAlert(alarm.code.alarm)
                 }
             }
         }
@@ -340,7 +328,7 @@ extension EversenseCGMManager {
         )
         if !events.isEmpty {
             delegate.notify { delegate in
-                delegate?.cgmManager(self, hasNew: events)
+                await delegate?.cgmManager(self, hasNew: events)
             }
         }
 
@@ -449,7 +437,7 @@ extension EversenseCGMManager {
                 return
             }
 
-            cgmManagerDelegate.cgmManagerDidUpdateState(self)
+            await cgmManagerDelegate.cgmManagerDidUpdateState(self)
             cgmManagerDelegate.cgmManager(self, didUpdate: self.cgmManagerStatus)
         }
     }
